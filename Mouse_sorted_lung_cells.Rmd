@@ -1,0 +1,533 @@
+---
+title: "Mouse_sorted_lung_cells"
+author: "Guadalupe Rivera Torruco"
+date: "4/29/2022"
+output: pdf_document
+---
+
+Meta-analysis of different sorted lung populations
+by: Guadalupe Rivera-Torruco
+Projects: E-MTAB-8573, E-GEOD-50927, GSE156692, GSE172104, E-GEOD-59831,
+E-MTAB-10324, E-GEOD-57391, GSE168529
+Whole lung cells vs sorted cells
+RNAseq of selected cells
+Organism: Mouse C57BL6/J
+
+This analysis correspond to an ongoing project to study different lung subsets from databases and experimental data to analyze Isthmin-1. ISM1 is a secreted protein highly expressed in mouse lungs, also this protein is related to hematopoiesis in zebra fish and in mouse lung progenitors.
+
+References:
+https://pubmed.ncbi.nlm.nih.gov/29758043/
+https://pubmed.ncbi.nlm.nih.gov/35402623/
+
+ENA projects listed were downloaded, quality assesed by FastQc, trimmed and filtered with AfterQC. After quality control, files were quatified with Salmon using the genome assembly  GRCm38 from Ensembl. The following script used Salmon Quants (file.sf) and R tools like txtimport and DESeq to annotate and analyse them.
+
+```{r Suppress warning messages}
+options(warn=-1)
+```
+
+```{r install and load R base packages, echo=FALSE}
+
+packages <- c("BiocManager",
+              "knitr",
+              "pheatmap", 
+              "RColorBrewer", 
+              "ggplot2", 
+              "magrittr", 
+              "ggrepel",
+              "igraph",
+              "greekLetters",
+              "ggpubr",
+              "grid",
+              "gridExtra",
+              "corrplot") 
+
+for (i in packages){
+  if(!is.element(i, .packages(all.available = TRUE))){
+    install.packages(i)
+  }
+  library(i, character.only = TRUE)
+}
+```
+
+If regular installing doesnt work for igraph, try:
+
+install.packages("igraph", type="binary") 
+
+If locfit error and R.version <4.1, try or update R:
+install.packages("http://cran.nexr.com/src/contrib/locfit_1.5-9.1.tar.gz", repos=NULL, type="source")
+
+```{r install and load Bioconductor packages, echo=FALSE}
+packages_bioconductor <- c("tximportData", 
+                           "tximport", 
+                           "DESeq2", 
+                           "apeglm", 
+                           "sva")
+
+#Check Bioconductor packages
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install(packages_bioconductor, force = TRUE, ask = FALSE)
+
+multi_library <- function(packages){
+  for(i in packages){
+    library(i, character.only = TRUE)
+  }
+}
+
+multi_library(packages_bioconductor)
+```
+
+```{r Select figure dimensions}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.align = "center") 
+
+```
+
+```{r Set working directory and directory where the Salmon Quants are, echo=FALSE}
+dir <-"C:/Users/lupit/OneDrive/Mouse_sorted_lung_cells" 
+setwd(dir)
+dir_files <- paste(dir, "/Quants", sep="")
+```
+
+```{r Load metadata file}
+coldata <- read.csv("metadata.csv", row.names = "Sample", stringsAsFactors=FALSE)
+head(coldata)
+```
+The next part is optional, if you want to change the name of some rows, fix some greek letter (library greekLetters) or modify the name of some group, we can do it as follows:
+```{r Undefined characters in some names}
+coldata$cell_type[26:36]
+```
+
+```{r Modify names with greekLetters library}
+for (i in 26:36){
+  if(i <= 28){
+    coldata$cell_type[i] <- paste("M", greeks("phi"), "B2", sep = "")
+    }
+  else if(i > 28 & i <= 31){
+    coldata$cell_type[i] <- paste("M", greeks("phi"), "B1", sep = "")
+  }
+  else if(i > 31 & i <= 34){
+    coldata$cell_type[i] <- paste("M", greeks("phi"), "A_SinglecF", sep = "")
+  }
+  else{ coldata$cell_type[i] <- paste("M", greeks("phi"), "A_CD11bneg", sep = "")
+    
+  }
+}
+
+coldata$cell_type[26:36]
+```
+Next we build a path to any sub folder inside Quants, the subfolder names are in the column "run" from our metadata file, we simply use paste to bind the run name _quant, next file.path will build the path for every file:
+```{r }
+files <- file.path(dir_files, paste(coldata$run, "_quant", sep=""), "quant.sf")
+head(files)
+```
+The file names can be changed to match the rownames from our metadata file and then we can check if all files exist.
+```{r }
+names(files) <- rownames(coldata)
+all(file.exists(files))
+```
+With AnnotationDbi we can build an annotation file to match the gene names given by ensembl.
+```{r Load Db annotation file}
+db_object <- read.csv("tx2gene.csv", colClasses=c("NULL",NA,NA)) #skip first column which is an index
+head(db_object)
+```
+Once we have everythin ready, we import the files with tximport
+```{r Import counts with tximport the summarize, message=FALSE}
+txi.tx <- tximport(files, 
+                   type = "salmon", 
+                   txOut=TRUE)
+txi.sum <- summarizeToGene(txi.tx, 
+                           tx2gene = db_object, 
+                           countsFromAbundance = c("no", "scaledTPM", "lengthScaledTPM"))
+```
+```{r }
+txi.sum$counts[1000:1005,1:5]
+```
+
+Before building our DESeq dataset, we can check:
+```{r }
+all(rownames(coldata) %in% colnames(txi.sum$counts))
+```
+If everything is correct, we continue:
+```{r Build DESes dataset, message=FALSE, warning=FALSE}
+se <- DESeqDataSetFromTximport(txi = txi.sum, 
+                               colData = coldata, 
+                               design = ~ cell_type)
+counts(se)[1000:1005,1:5]
+```
+We can check the object created, looking its dimensions, the rows and columns.
+```{r DESseq dataset dimensions}
+dim(se)
+```
+
+```{r Genenames}
+head(rownames(se)) 
+```
+
+```{r Metadata attached to dataset}
+head(colData(se))[,1:6] 
+```
+
+```{r Columns of the metadata}
+summary(se$cell_type)
+```
+
+Exploratory analysis and visualization
+```{r Original number of genes}
+nrow(se)
+```
+
+```{r Filtering out genes with no counts}
+keep <- rowSums(counts(se)) > 1
+se <- se[keep,]
+nrow(se)
+```
+Then we normalize the counts, the normalization factors matrix should not have 0's in it
+# it should have geometric mean near 1 for each row
+```{r Normalization, message=FALSE}
+normFactors <- matrix(runif(nrow(se)*ncol(se),0.5,1.5),
+                     ncol=ncol(se),nrow=nrow(se),
+                     dimnames=list(1:nrow(se),1:ncol(se)))
+normFactors <- normFactors / exp(rowMeans(log(normFactors)))
+se <- DESeq(se)
+se <- estimateSizeFactors(se)
+```
+Since we are using different batches of RNAseq experiments, is recommendable to reduce the covariative effect of it. The tool ComBat_seq from sva library help us with this issue.
+More info: https://rdrr.io/bioc/sva/man/ComBat.html
+```{r Generate a batch fixed set, message=FALSE}
+count_matrix <- counts(se, normalized=TRUE)
+batch <- se$batch
+
+adjusted <- sva::ComBat_seq(count_matrix, batch, NULL)
+adjusted <- as.data.frame(lapply(as.data.frame(adjusted), as.integer))  #normalization cause non integer data
+genes <- rownames(count_matrix)
+adjusted <- cbind(genes,adjusted)
+se <- DESeqDataSetFromMatrix(countData=adjusted, 
+                              colData=coldata, 
+                              design=~cell_type, tidy = TRUE)
+```
+Next we migth want to use a control group or reference, first we check the current levels:
+```{r Check the levels of the experiment}
+levels(se$cell_type)
+```
+I want to use Whole_lung as reference, so we use magrittr relevel:
+```{r }
+se$cell_type %<>% relevel("Whole_lung")
+levels(se$cell_type)
+```
+At this point we can save our counts table to use it later or with online tools to visualize it. Uncomment to run it.
+```{r Optional csv saving}
+#write.csv(counts(se), "gene_counts_norm_batchfix.csv", quote = FALSE)
+```
+We can evaluate the similarity between every sample and the plot it with a heatmap. First we must transform the data by calling vst function from DESeq2. 
+More info: https://www.rdocumentation.org/packages/DESeq2/versions/1.12.3/topics/vst
+Then, we calculate the similiraty distance, the default is Euclidian distance but we can try other formulas.
+
+```{r Transform and calculate similarity distance, message=FALSE}
+#Data transformation
+vsd <- vst(se, blind = FALSE)
+#Asses overall similarity between samples
+sample_dist <- dist(t(assay(vsd)))
+```
+Visualize the result: Heatmap of sample-to-sample distances using the variance stabilizing transformed values
+```{r Pheatmap}
+sampleDistMatrix <- as.matrix(sample_dist)
+rownames(sampleDistMatrix) <- paste( vsd$cell_type, sep = " - " )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sample_dist,
+         clustering_distance_cols = sample_dist,
+         col = colors,
+         fontsize = 6)
+```
+
+```{r PCA}
+pcaData <- plotPCA(vsd, intgroup = c("cell_type"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = cell_type)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  ggtitle("PCA with VST data")
+```
+Diferential expression analysis
+
+
+```{r Build DESeq object and results table, message=FALSE}
+dds <- DESeq(se)
+res <- results(dds)
+head(res)
+```
+We subset the results table to these genes and then sort it by the log2 fold change
+```{r Subset results table}
+res_significant <- subset(res, padj < 0.1)
+```
+```{r Strongest down-regulation}
+head(res_significant[order(res_significant$log2FoldChange), ])
+```
+```{r Strongest up-regulation}
+head(res_significant[order(res_significant$log2FoldChange, decreasing = TRUE), ])
+```
+Plotting the results
+```{r Function to plot one or more plots}
+myplot <- function(data, title){
+  ggplot(data, aes(x = cell_type, y = count, color = cell_type)) + 
+    scale_y_log10() + 
+    geom_boxplot() + 
+    labs(title=title) +
+    ylab("RNA-normalized counts") +
+    xlab("Cell types") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+  }
+```
+
+```{r Most differentiated gene}
+topGene <- rownames(res)[which.min(res$padj)]
+topGene_count <- plotCounts(dds, gene = topGene, intgroup=c("cell_type"), returnData = TRUE)
+```
+
+```{r }
+myplot(topGene_count, topGene)
+```
+# Ism1 and genes of proteins coexpressed by flowcytometry
+
+We can count and plot any gene we're interested in, in this case we looked for Isthmin-1 and some co-expressed protein genes like Sca1(Ly6a) or CD105(Eng).
+
+```{r multicount function}
+multi_count <- function(data, gen_name){
+  plotCounts(data, 
+             gene = gen_name, 
+             intgroup=c("cell_type"), 
+             returnData = TRUE)
+}
+```
+
+```{r Count and plot multiple genes from list}
+gen_name <- c("Ism1", "Ly6a", "Cd34", "Eng")
+
+# counting multiple genes from gen_name
+list_c <- vector('list', length(gen_name))
+for (i in seq_along(gen_name)){
+  list_c[[i]] <- multi_count(dds, gen_name[i])
+}
+
+#multiple plots from list_c
+list_p <- vector('list', length(gen_name))
+
+for (i in seq_along(list_c)){
+  list_p[[i]] <- myplot(list_c[[i]], paste0("RNA expresion of ", gen_name[i]))
+  list_p[[i]] <- list_p[[i]] + theme(legend.position = "none") #suppr legends
+}
+```
+After building the list of gene counts and gene plots, we use gridExtra to arrange them into one plot as follows:
+```{r Arrange the list of plots into one, fig.width=10, fig.height=10}
+title_exp <- "Ism1 and genes of proteins co-expressed by flow cytometry in lung cells"
+plotSW <- gridExtra::grid.arrange(grobs = list_p,
+                                  top = textGrob(title_exp, gp =gpar(fontsize=20)),
+                                  ncol=2,
+                                  bottom = "Ly6a(Sca1), Eng(CD105)")
+```
+
+We can seek for gene correlations across the results, the following list corresponde to genes assesed by flow cytometry to identify hematopoietic subsets, mesenchymal stem cells, endothelial cells and, epithelial cells.
+```{r }
+genes <- c("Ism1", "Itga1", "Itga2", "Itga4","Itgae", "Itgam", "Cd3e", "Cd19", "Cd69", "Fcgr3", "Ncr1", "Pdgfra", 'Ly6a', 'Cd34', 'Kit', "Eng", "Pecam1","Cdh5","Tie1", "Epcam")
+
+#Count all the dds results
+nc <- counts(dds,normalized=TRUE)
+#Transpose the matrix to have genxgen
+nc_t <- t(nc)
+```
+
+```{r Gene correlation plot, fig.width=10, fig.height=10}
+## leave blank on non-significant coefficient
+## add significant correlation coefficients
+M <- cor(nc_t[, genes])
+testRes = cor.mtest(nc_t[, genes], conf.level = 0.95)
+corrplot(M, p.mat = testRes$p, method = 'circle', insig='blank',
+         addCoef.col ='black', title="title", mar=c(0,0,1,0), number.cex = 0.8, order = 'hclust', addrect = 4)
+```
+#Ism1 and associated genes to Fibroblasts
+
+Since we saw Ism1 gene expressin was high in Fibroblasts, we wanted to see typical flow cytometry marker for this subset. Flow cytometry experiments also had showed Ism1 co-expression with CD34 and Sca1, antigens often found in fibroblasts
+```{r }
+plotCounts(dds, 
+             gene = "Ly6a", 
+             intgroup=c("cell_type"), 
+             returnData = T)
+
+```
+
+
+```{r Count and plot multiple genes from list_}
+gen_name2 <- c("Ism1", "Ly6a", "Cd34", "Pdgfra")
+
+# counting multiple genes from gen_name
+list_c <- vector('list', length(gen_name2))
+for (i in seq_along(gen_name2)){
+  list_c[[i]] <- multi_count(dds, gen_name2[i])
+}
+
+#multiple plots from list_c
+list_p <- vector('list', length(gen_name2))
+
+for (i in seq_along(list_c)){
+  list_p[[i]] <- myplot(list_c[[i]], paste0("RNA expresion of ", gen_name2[i]))
+  list_p[[i]] <- list_p[[i]] + theme(legend.position = "none") #suppr legends
+}
+```
+```{r Arrange the list of plots into one_, fig.width=10, fig.height=10}
+#arrange every plot from the list_p
+title_exp <-"Ism1 and associated genes to lung Fibroblasts"
+
+plotSW <- gridExtra::grid.arrange(grobs = list_p,
+                                  top = textGrob(title_exp, gp =gpar(fontsize=20)),
+                                  ncol=2,
+                                  bottom = "Itga1 (VLA-1), Itgae(CD103)")
+```
+We could look for fibroblast differntially expressed genes compared to whole lung cells. 
+```{r }
+res_fibroblast <- lfcShrink(dds, 
+                            coef="cell_type_Fibroblast_vs_Whole_lung", 
+                            type="apeglm")
+```
+
+We will keep only those genes 5 times higher/lower with a padj < 10e-5
+```{r Volcano plot, fig.width=10, fig.height=10}
+
+# add a column of NAs
+res_fibroblast_df <- as.data.frame(res_fibroblast)
+res_fibroblast_df$gene_name <- rownames(res_fibroblast)
+res_fibroblast_df$diffexpressed <- "NO" #Non variable genes
+
+# if log2Foldchange > 5 and pvalue < 0.0001, set as "UP" 
+res_fibroblast_df$diffexpressed[res_fibroblast_df$log2FoldChange > 5 & -log10(res_fibroblast_df$padj) > 10] <- "UP"
+
+# if log2Foldchange < -5 and pvalue < 0.0001, set as "DOWN"
+res_fibroblast_df$diffexpressed[res_fibroblast_df$log2FoldChange < -5 & -log10(res_fibroblast_df$padj) > 10] <- "DOWN"
+
+# Now write down the name of genes beside the points...
+# Create a new column "delabel" to de, that will contain the name of genes differentially expressed (NA in case they are not)
+res_fibroblast_df$delabel <- NA
+res_fibroblast_df$delabel[res_fibroblast_df$diffexpressed != "NO"] <- res_fibroblast_df$gene_name[res_fibroblast_df$diffexpressed != "NO"]
+
+#plot
+#enhance labeling distances
+ggplot(res_fibroblast_df, aes(x=log2FoldChange, y=-log10(padj), col=diffexpressed, label=delabel)) + 
+  geom_point()+ 
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "black", "red")) +
+  geom_text_repel() +
+  ggtitle("Lung fibroblast vs Whole lung cells expression") + 
+    theme(plot.title = element_text(size = 20, face = "bold"))
+```
+
+```{r ggpubr MA plot, fig.width=10, fig.height=10}
+#ggpubr MA plot
+
+# add a column of NAs
+res_fibroblast_df <- as.data.frame(res_fibroblast)
+res_fibroblast_df$gene_name <- rownames(res_fibroblast)
+res_fibroblast_df$detection_call <- 0 #Non variable genes
+
+# if log2 mean exp > 4 considered as expressed
+res_fibroblast_df$detection_call[log2(res_fibroblast_df$baseMean) > 4] <- 1
+
+options(ggrepel.max.overlaps = Inf)
+# ggpubr::ggmaplot fdr = padj threshold     fc = foldchange threshold
+ggmaplot(res_fibroblast, main = expression("Whole_lung" %->% "Fibroblasts"),
+         fdr = 0.0001, fc = 10, size = 1,
+         palette = c("#B31B21", "#1465AC", "darkgray"),
+         genenames = as.vector(res_fibroblast$gene_name),
+         legend = "top", top = 10,
+         font.label = c("bold", 11),
+         font.legend = "bold",
+         font.main = "bold",
+         ggtheme = ggplot2::theme_minimal())
+```
+
+#Ism1 and associated genes to Macrophages B1
+
+Since we saw Ism1 gene expressin was high in Macrophafes B1, we wanted to see typical flow cytometry marker for this subset. Flow cytometry experiments also had showed Ism1 co-expression with CD49a (Itga1), CD103(Itgae) in lungs (Unpublished data). Also CD69 is highly expressed by this subpopulation.
+```{r Count and plot multiple genes from list__}
+gen_name3 <- c("Ism1", "Itga1", "Itgae", "Cd69")
+
+list_c <- vector('list', length(gen_name3))
+for (i in seq_along(gen_name3)){
+  list_c[[i]] <- multi_count(dds, gen_name3[i])
+}
+
+list_p <- vector('list', length(gen_name3))
+for (i in seq_along(list_c)){
+  list_p[[i]] <- myplot(list_c[[i]], paste0("RNA expresion of ", gen_name3[i]))
+  list_p[[i]] <- list_p[[i]] + theme(legend.position = "none") #suppr legends
+}
+```
+
+```{r Arrange the list of plots into one__, fig.width=10, fig.height=10}
+# arrange every plot from the list_p
+title_exp <- paste("Ism1 and associated genes to lung M", greeks("phi"), "B1 cells", sep="")
+
+plotSW <- gridExtra::grid.arrange(grobs = list_p, 
+                                  top = textGrob(title_exp, gp =gpar(fontsize=20)), 
+                                  ncol=2,
+                                  bottom = "Itga1 (VLA-1), Itgae(CD103)")
+```
+We could look for fibroblast differntially expressed genes compared to whole lung cells.
+```{r }
+res_MfB1 <- lfcShrink(dds, 
+                         coef="cell_type_MfB1_vs_Whole_lung", 
+                         type="apeglm")
+```
+
+```{r Volcano plot_}
+
+# add a column of NAs
+res_MfB1_df <- as.data.frame(res_MfB1)
+res_MfB1_df$gene_name <- rownames(res_MfB1)
+res_MfB1_df$diffexpressed <- "NO" #Non variable genes
+
+# if log2Foldchange > 5 and pvalue < 0.0001, set as "UP" 
+res_MfB1_df$diffexpressed[res_MfB1_df$log2FoldChange > 5 & -log10(res_MfB1_df$padj) > 10] <- "UP"
+
+# if log2Foldchange < -5 and pvalue < 0.0001, set as "DOWN"
+res_MfB1_df$diffexpressed[res_MfB1_df$log2FoldChange < -5 & -log10(res_MfB1_df$padj) > 10] <- "DOWN"
+
+# Now write down the name of genes beside the points...
+# Create a new column "delabel" to de, that will contain the name of genes differentially expressed (NA in case they are not)
+res_MfB1_df$delabel <- NA
+res_MfB1_df$delabel[res_MfB1_df$diffexpressed != "NO"] <- res_MfB1_df$gene_name[res_MfB1_df$diffexpressed != "NO"]
+
+#plot
+#enhance labeling distances
+ggplot(res_MfB1_df, aes(x=log2FoldChange, y=-log10(padj), col=diffexpressed, label=delabel)) + 
+  geom_point()+ 
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "black", "red")) +
+  geom_text_repel() +
+  ggtitle(paste0(paste0("Lung M", greeks("phi"), "B1 cells vs Whole lung cells expression"))) + 
+    theme(plot.title = element_text(size = 20, face = "bold"))
+
+```
+
+```{r MA plot_}
+# add a column of NAs
+res_MfB1_df <- as.data.frame(res_MfB1)
+res_MfB1_df$gene_name <- rownames(res_MfB1)
+res_MfB1_df$detection_call <- 0 #Non variable genes
+
+# if log2 mean exp > 4 considered as expressed
+res_MfB1_df$detection_call[log2(res_MfB1_df$baseMean) > 4] <- 1
+
+options(ggrepel.max.overlaps = Inf)
+# ggpubr::ggmaplot fdr = padj threshold     fc = foldchange threshold
+ggmaplot(res_MfB1_df, main = expression("Whole_lung" %->% paste("M", phi , "B1 cells")),
+         fdr = 0.0001, fc = 10, size = 1,
+         palette = c("#B31B21", "#1465AC", "darkgray"),
+         genenames = as.vector(res_MfB1_df$gene_name),
+         legend = "top", top = 10,
+         font.label = c("bold", 11),
+         font.legend = "bold",
+         font.main = "bold",
+         ggtheme = ggplot2::theme_minimal())
+```
